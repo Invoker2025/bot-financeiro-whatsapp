@@ -2,5 +2,5 @@ flask
 requests
 gspread
 google-auth
-openai
+openai==0.28.0
 gunicorn
