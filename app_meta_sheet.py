@@ -10,19 +10,20 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ==============================================================================
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES GERAIS
 # ==============================================================================
 
-# IDs da Planilha
+# ID da sua Planilha Google (Copie do link da sua planilha)
 SHEET_ID = "1UfAxtLmB5LKNGoIOhue5jruSOA-AyC3CCQK6-P5YGvc"
 
-# Verifica se está no Render (pasta secreta) ou no PC local
+# Verifica onde está o arquivo de credenciais do Google (Render ou Local)
 if os.path.exists("/etc/secrets/google-creds.json"):
     GOOGLE_SA_JSON_PATH = "/etc/secrets/google-creds.json"
 else:
     GOOGLE_SA_JSON_PATH = "google-creds.json"
 
-# Chaves de API (O código busca lá nas configurações do Render)
+# --- CHAVES DE API (Buscadas nas Variáveis de Ambiente do Render) ---
+# ATENÇÃO: Nunca escreva suas senhas diretamente aqui no código.
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
@@ -32,15 +33,16 @@ WHATSAPP_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID")
 
 app = Flask(__name__)
 
-# Configuração de Log
+# Configuração de Logs (Para ver o que acontece no painel do Render)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------------------------
+# ==============================================================================
 # FUNÇÕES AUXILIARES
-# ------------------------------------------------------------------------------
+# ==============================================================================
 
 def normalize_text(text):
+    """Remove acentos e caracteres especiais para padronizar o texto."""
     import unicodedata
     if not text:
         return "Outros"
@@ -50,6 +52,7 @@ def normalize_text(text):
         return str(text).title()
 
 def get_gspread_client():
+    """Autentica no Google Sheets usando o arquivo de credenciais."""
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets",
                   "https://www.googleapis.com/auth/drive"]
@@ -57,20 +60,35 @@ def get_gspread_client():
             GOOGLE_SA_JSON_PATH, scopes=scopes)
         return gspread.authorize(creds)
     except Exception as e:
-        logger.error(f"Erro gspread auth: {e}")
+        logger.error(f"Erro na autenticação do Google Sheets: {e}")
         return None
 
 def parse_expense_openai(text):
+    """Usa o ChatGPT para extrair valor, categoria e nota da mensagem."""
     try:
         prompt = f"""
-        Analise: "{text}".
-        Retorne apenas um JSON com as chaves: amount (float), category (string), note (string), payment (string), type (expense|income)
-        Exemplo: {{"amount": 0.0, "category": "X", "note": "Y", "payment": "Pix", "type": "expense"}}
+        Analise a despesa ou receita: "{text}".
+        Retorne apenas um JSON com as chaves:
+        - amount (float, use ponto para decimais)
+        - category (string, ex: Alimentação, Transporte)
+        - note (string, descrição curta)
+        - payment (string, ex: Pix, Crédito, Dinheiro)
+        - type (expense ou income)
+        
+        Exemplo de resposta: 
+        {{"amount": 50.0, "category": "Alimentação", "note": "Pizza", "payment": "Crédito", "type": "expense"}}
         """
+        
         resp = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0, max_tokens=120
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=150
         )
+        
         content = resp.choices[0].message.content.strip()
+        
+        # Tenta encontrar e extrair o JSON da resposta da IA
         s = content.find('{')
         e = content.rfind('}') + 1
         if s != -1 and e > s:
@@ -82,18 +100,21 @@ def parse_expense_openai(text):
                 normalize_text(data.get("payment", "Outros")),
                 str(data.get("type", "expense"))
             )
+        # Fallback se a IA não retornar JSON
         return 0.0, "Geral", text, "Outros", "expense"
+        
     except Exception as e:
-        logger.error(f"OpenAI Error: {e}")
+        logger.error(f"Erro na OpenAI: {e}")
         return 0.0, "Geral", text, "Outros", "expense"
 
-# ------------------------------------------------------------------------------
-# FUNÇÃO DE ENVIO (META WHATSAPP)
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# FUNÇÃO DE ENVIO DE MENSAGEM (WHATSAPP CLOUD API)
+# ==============================================================================
 
 def send_whatsapp_message(to_number, message):
+    """Envia mensagem de texto via WhatsApp Cloud API da Meta."""
     if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
-        logger.error("Faltam credenciais da Meta (Token ou Phone ID)")
+        logger.error("Faltam credenciais da Meta (Token ou Phone ID). Verifique no Render.")
         return
 
     url = f"https://graph.facebook.com/v17.0/{WHATSAPP_PHONE_ID}/messages"
@@ -102,13 +123,15 @@ def send_whatsapp_message(to_number, message):
         "Content-Type": "application/json",
     }
 
-    # Limpeza do número (Meta aceita apenas números, sem +)
-    clean_number = to_number.replace("+", "").replace("whatsapp:", "")
+    # Limpa o número (remove caracteres especiais)
+    clean_number = to_number.replace("+", "").replace("whatsapp:", "").strip()
     
-    # --- CORREÇÃO BRASIL (ADICIONA O 9 SE FALTAR) ---
-    # Se o número começar com 55 (Brasil) e tiver 12 dígitos (faltando o 9), a gente insere.
+    # --- CORREÇÃO DE NÚMERO BRASILEIRO (ADICIONA O 9º DÍGITO) ---
+    # Se for Brasil (55) e tiver 12 dígitos (Ex: 55 75 9223 8338), adiciona o 9.
     if clean_number.startswith("55") and len(clean_number) == 12:
-        clean_number = clean_number[:4] + "9" + clean_number[4:]
+        corrected_number = clean_number[:4] + "9" + clean_number[4:]
+        logger.info(f"Corrigindo número: {clean_number} -> {corrected_number}")
+        clean_number = corrected_number
     
     data = {
         "messaging_product": "whatsapp",
@@ -119,20 +142,22 @@ def send_whatsapp_message(to_number, message):
 
     try:
         response = requests.post(url, headers=headers, json=data)
-        if response.status_code not in [200, 201]:
-            logger.error(f"Erro Meta: {response.text}")
+        
+        if response.status_code in [200, 201]:
+            logger.info(f"Mensagem enviada com sucesso para {clean_number}!")
         else:
-            logger.info(f"Mensagem enviada com sucesso via Meta para {clean_number}!")
+            logger.error(f"Erro Meta ao enviar: {response.status_code} - {response.text}")
+            
     except Exception as e:
-        logger.error(f"Erro requisição Meta: {e}")
+        logger.error(f"Erro na requisição Meta: {e}")
 
-# ------------------------------------------------------------------------------
-# WEBHOOK
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# ROTAS DO SERVIDOR (WEBHOOK)
+# ==============================================================================
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
-    # Verificação inicial da Meta
+    """Verificação inicial exigida pela Meta para conectar o Webhook."""
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -141,49 +166,60 @@ def verify_webhook():
         logger.info("WEBHOOK VERIFICADO COM SUCESSO!")
         return challenge, 200
     else:
-        return "Erro de verificação", 403
+        return "Erro de verificação de token", 403
 
 @app.route("/webhook", methods=["POST"])
 def receive_message():
+    """Recebe notificações de mensagens novas do WhatsApp."""
     try:
         body = request.get_json()
 
+        # Verifica se é um evento de mensagem do WhatsApp
         if body.get("object") == "whatsapp_business_account":
             for entry in body.get("entry", []):
                 for change in entry.get("changes", []):
                     value = change.get("value", {})
+                    
+                    # Garante que é uma mensagem de texto recebida (não status de entrega)
                     if "messages" in value:
                         message = value["messages"][0]
                         from_number = message["from"]
-                        msg_body = message["text"]["body"]
+                        
+                        # Processa apenas mensagens de texto
+                        if message["type"] == "text":
+                            msg_body = message["text"]["body"]
+                            logger.info(f"Mensagem recebida de {from_number}: {msg_body}")
 
-                        logger.info(f"Mensagem recebida de {from_number}: {msg_body}")
+                            # 1. Processar Texto com IA
+                            amount, category, note, payment, t_type = parse_expense_openai(msg_body)
 
-                        # 1. Processar
-                        amount, category, note, payment, t_type = parse_expense_openai(msg_body)
+                            # 2. Salvar na Planilha
+                            gc = get_gspread_client()
+                            if gc:
+                                sh = gc.open_by_key(SHEET_ID)
+                                try:
+                                    # Tenta achar aba 'Extrato_Geral', se não, pega a primeira
+                                    ws = sh.worksheet("Extrato_Geral")
+                                except:
+                                    ws = sh.get_worksheet(0)
 
-                        # 2. Salvar
-                        gc = get_gspread_client()
-                        if gc:
-                            sh = gc.open_by_key(SHEET_ID)
-                            try:
-                                ws = sh.worksheet("Extrato_Geral")
-                            except:
-                                ws = sh.get_worksheet(0)
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                # Formata valor para planilha (virgula como decimal)
+                                val_fmt = f"{-abs(amount) if t_type == 'expense' else abs(amount):.2f}".replace(".", ",")
 
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            val_fmt = f"{-abs(amount) if t_type == 'expense' else abs(amount):.2f}".replace(".", ",")
+                                ws.append_row([timestamp, val_fmt, category, note, payment, t_type, msg_body])
+                                logger.info("Dados salvos na planilha.")
 
-                            ws.append_row([timestamp, val_fmt, category, note, payment, t_type, msg_body])
-
-                            # 3. Responder
-                            reply_text = f"✅ Salvo!\nR$ {amount} ({category})"
-                            send_whatsapp_message(from_number, reply_text)
+                                # 3. Responder no WhatsApp
+                                reply_text = f"✅ Salvo!\nR$ {amount:.2f} ({category})"
+                                send_whatsapp_message(from_number, reply_text)
+                        else:
+                            logger.info("Mensagem recebida não é texto (ignorada).")
 
         return jsonify({"status": "ok"}), 200
 
     except Exception as e:
-        logger.error(f"Erro no webhook: {e}")
+        logger.error(f"Erro crítico no webhook: {e}")
         return jsonify({"status": "error"}), 500
 
 if __name__ == "__main__":
