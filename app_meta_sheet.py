@@ -108,9 +108,14 @@ def send_whatsapp_message(to_number, message):
     }
 
     # Limpeza do número (Meta aceita apenas números, sem +)
-    clean_number = to_number.replace("+", "").replace("whatsapp:", "")
-
-    data = {
+        clean_number = to_number.replace("+", "").replace("whatsapp:", "")
+        
+        # --- CORREÇÃO BRASIL (ADICIONA O 9 SE FALTAR) ---
+        # Se o número começar com 55 (Brasil) e tiver 12 dígitos (faltando o 9), a gente insere.
+        if clean_number.startswith("55") and len(clean_number) == 12:
+            clean_number = clean_number[:4] + "9" + clean_number[4:]
+        
+        data = {
         "messaging_product": "whatsapp",
         "to": clean_number,
         "type": "text",
