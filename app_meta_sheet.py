@@ -23,7 +23,6 @@ else:
     GOOGLE_SA_JSON_PATH = "google-creds.json"
 
 # Chaves de API (O código busca lá nas configurações do Render)
-# ATENÇÃO: Não escreva sua senha aqui. Deixe exatamente como está abaixo.
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
@@ -41,7 +40,6 @@ logger = logging.getLogger(__name__)
 # FUNÇÕES AUXILIARES
 # ------------------------------------------------------------------------------
 
-
 def normalize_text(text):
     import unicodedata
     if not text:
@@ -50,7 +48,6 @@ def normalize_text(text):
         return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('ASCII').title()
     except:
         return str(text).title()
-
 
 def get_gspread_client():
     try:
@@ -62,7 +59,6 @@ def get_gspread_client():
     except Exception as e:
         logger.error(f"Erro gspread auth: {e}")
         return None
-
 
 def parse_expense_openai(text):
     try:
@@ -95,7 +91,6 @@ def parse_expense_openai(text):
 # FUNÇÃO DE ENVIO (META WHATSAPP)
 # ------------------------------------------------------------------------------
 
-
 def send_whatsapp_message(to_number, message):
     if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
         logger.error("Faltam credenciais da Meta (Token ou Phone ID)")
@@ -108,14 +103,14 @@ def send_whatsapp_message(to_number, message):
     }
 
     # Limpeza do número (Meta aceita apenas números, sem +)
-        clean_number = to_number.replace("+", "").replace("whatsapp:", "")
-        
-        # --- CORREÇÃO BRASIL (ADICIONA O 9 SE FALTAR) ---
-        # Se o número começar com 55 (Brasil) e tiver 12 dígitos (faltando o 9), a gente insere.
-        if clean_number.startswith("55") and len(clean_number) == 12:
-            clean_number = clean_number[:4] + "9" + clean_number[4:]
-        
-        data = {
+    clean_number = to_number.replace("+", "").replace("whatsapp:", "")
+    
+    # --- CORREÇÃO BRASIL (ADICIONA O 9 SE FALTAR) ---
+    # Se o número começar com 55 (Brasil) e tiver 12 dígitos (faltando o 9), a gente insere.
+    if clean_number.startswith("55") and len(clean_number) == 12:
+        clean_number = clean_number[:4] + "9" + clean_number[4:]
+    
+    data = {
         "messaging_product": "whatsapp",
         "to": clean_number,
         "type": "text",
@@ -127,14 +122,13 @@ def send_whatsapp_message(to_number, message):
         if response.status_code not in [200, 201]:
             logger.error(f"Erro Meta: {response.text}")
         else:
-            logger.info("Mensagem enviada com sucesso via Meta!")
+            logger.info(f"Mensagem enviada com sucesso via Meta para {clean_number}!")
     except Exception as e:
         logger.error(f"Erro requisição Meta: {e}")
 
 # ------------------------------------------------------------------------------
 # WEBHOOK
 # ------------------------------------------------------------------------------
-
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
@@ -148,7 +142,6 @@ def verify_webhook():
         return challenge, 200
     else:
         return "Erro de verificação", 403
-
 
 @app.route("/webhook", methods=["POST"])
 def receive_message():
@@ -164,12 +157,10 @@ def receive_message():
                         from_number = message["from"]
                         msg_body = message["text"]["body"]
 
-                        logger.info(
-                            f"Mensagem recebida de {from_number}: {msg_body}")
+                        logger.info(f"Mensagem recebida de {from_number}: {msg_body}")
 
                         # 1. Processar
-                        amount, category, note, payment, t_type = parse_expense_openai(
-                            msg_body)
+                        amount, category, note, payment, t_type = parse_expense_openai(msg_body)
 
                         # 2. Salvar
                         gc = get_gspread_client()
@@ -181,11 +172,9 @@ def receive_message():
                                 ws = sh.get_worksheet(0)
 
                             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            val_fmt = f"{-abs(amount) if t_type == 'expense' else abs(amount):.2f}".replace(
-                                ".", ",")
+                            val_fmt = f"{-abs(amount) if t_type == 'expense' else abs(amount):.2f}".replace(".", ",")
 
-                            ws.append_row(
-                                [timestamp, val_fmt, category, note, payment, t_type, msg_body])
+                            ws.append_row([timestamp, val_fmt, category, note, payment, t_type, msg_body])
 
                             # 3. Responder
                             reply_text = f"✅ Salvo!\nR$ {amount} ({category})"
@@ -196,7 +185,6 @@ def receive_message():
     except Exception as e:
         logger.error(f"Erro no webhook: {e}")
         return jsonify({"status": "error"}), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
