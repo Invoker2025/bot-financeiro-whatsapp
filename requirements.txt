@@ -1,6 +1,9 @@
-flask
+Flask>=2.0
 requests
+openai
 gspread
 google-auth
-openai==0.28.0
+google-auth-oauthlib
+google-auth-httplib2
+twilio
 gunicorn
